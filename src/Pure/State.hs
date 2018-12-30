@@ -1,10 +1,17 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving, ConstraintKinds, ImplicitParams, MagicHash, FlexibleInstances, MultiParamTypeClasses, RankNTypes #-}
 module Pure.State
-  ( Ref, ref
-  , getWith, putWith, modifyWith
-  , runPureWith, runPure, runPureIO, runPureWithIO
-  , (=<|), (|>=), (=<||>), (=<||>=)
+  ( -- * Stateful View Monad
+    PureM, runPure, runPureIO
+  , runPureWith, runPureWithIO
+  -- * State Reference Utilities
+  , Ref(..), ref, getWith, putWith, modifyWith
+  -- * Stateful View Construction Combinators
+  , (<$|), (=<|), (|>=), (=<||>), (=<||>=)
+  -- * Stateful Application Initlizer
   , inject
+  -- * Re-exports
+  , MonadIO(..)
+  , MonadTrans(..)
   , module State
   , module Export
   ) where
@@ -46,9 +53,9 @@ instance MonadTrans (PureM s) where
 
 instance MonadIO m => State.MonadState s (PureM s m) where
   {-# INLINE get #-}
-  get = get
+  get = ref >>= getWith
   {-# INLINE put #-}
-  put = put
+  put s = ref >>= flip putWith s
 
 instance MonadFix m => MonadFix (PureM s m) where
   {-# INLINE mfix #-}
@@ -57,18 +64,6 @@ instance MonadFix m => MonadFix (PureM s m) where
 {-# INLINE ref #-}
 ref :: Monad m => PureM s m (Ref s)
 ref = PureM Reader.ask
-
-{-# INLINE get #-}
-get :: MonadIO m => PureM s m s
-get = ref >>= getWith
-
-{-# INLINE put #-}
-put :: MonadIO m => s -> PureM s m ()
-put s = ref >>= flip putWith s
-
-{-# INLINE modify #-}
-modify :: MonadIO m => (s -> s) -> PureM s m ()
-modify f = ref >>= flip modifyWith f
 
 {-# INLINE getWith #-}
 getWith :: MonadIO m => Ref s -> m s
@@ -139,9 +134,14 @@ infixr 9 |>=
 
 infixl 8 =<|
 {-# INLINE (=<|) #-}
-(=<|) :: (ToView b, Functor f) => a -> (a -> f b) -> f View
-(=<|) a g = fmap toView (g a)
+(=<|) :: (ToView b, Applicative f) => a -> (a -> b) -> f View
+(=<|) a g = pure (toView (g a))
+
+infixl 8 <$|
+{-# INLINE (<$|) #-}
+(<$|) :: (ToView b, Functor f) => f a -> (a -> b) -> f View
+(<$|) a f = fmap (toView . f) a
 
 {-# INLINE inject #-}
-inject :: Typeable s => Element -> s -> PureM s IO View -> IO ()
+inject :: (IsNode e, Typeable s) => e -> s -> PureM s IO View -> IO ()
 inject e s p = Pure.inject e (runPureIO s p)
