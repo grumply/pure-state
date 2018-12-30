@@ -19,7 +19,10 @@ cabal-version:       >=1.10
 library
   exposed-modules: Pure.State
   build-depends:       base >=4.11 && <4.12,
-                       pure >= 0.7 && < 1,
+                       pure-core >= 0.7 && < 1,
+                       pure-default >= 0.7 && < 1,
+                       pure-dom >= 0.7 && < 1,
+                       pure-lifted >= 0.7 && < 1,
                        mtl,
                        transformers
   hs-source-dirs:      src

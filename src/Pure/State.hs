@@ -1,23 +1,23 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, ConstraintKinds, ImplicitParams, MagicHash, FlexibleInstances, MultiParamTypeClasses, RankNTypes #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, ImplicitParams, MagicHash, FlexibleInstances, MultiParamTypeClasses, RankNTypes, PatternSynonyms #-}
 module Pure.State
   ( -- * Stateful View Monad
     PureM, runPure, runPureIO
   , runPureWith, runPureWithIO
   -- * State Reference Utilities
-  , Ref(..), ref, getWith, putWith, modifyWith
+  , SRef(..), ref, getWith, putWith, modifyWith
   -- * Stateful View Construction Combinators
   , (<$|), (=<|), (|>=), (=<||>), (=<||>=)
   -- * Stateful Application Initlizer
-  , inject
+  , injectPure
   -- * Re-exports
-  , MonadIO(..)
-  , MonadTrans(..)
-  , module State
-  , module Export
   ) where
 
-import Pure as Export hiding (inject,modify,get,Ref)
-import qualified Pure
+import Pure.Data.Default (Default(..))
+import Pure.Data.Lifted (IsNode)
+import Pure.Data.View (Comp(..),View(..),ToView(..))
+import qualified Pure.Data.View as Pure
+import Pure.Data.View.Patterns (pattern LibraryComponentIO,HasChildren(..))
+import Pure.DOM
 
 import Control.Applicative
 import Control.Monad
@@ -29,18 +29,18 @@ import qualified Control.Monad.Trans.State as State
 import qualified Control.Monad.State.Class as State
 
 import Data.IORef
-import Data.Kind
-import Data.Proxy
 import Data.Typeable
 
 import GHC.Exts
 
-data Ref s = Ref
+-- These prevent GC if used outside of the View context. I should
+-- use System.Mem.Weak and the stateful component's ThreadId.
+data SRef s = SRef
   { reader :: IO s
   , writer :: s -> IO ()
   }
 
-newtype PureM s m a = PureM { unPureM :: Reader.ReaderT (Ref s) m a }
+newtype PureM s m a = PureM { unPureM :: Reader.ReaderT (SRef s) m a }
   deriving (Functor,Applicative,Monad,Alternative,MonadPlus)
 
 instance MonadIO m => MonadIO (PureM s m) where
@@ -62,23 +62,23 @@ instance MonadFix m => MonadFix (PureM s m) where
   mfix = PureM . mfix . (unPureM .)
 
 {-# INLINE ref #-}
-ref :: Monad m => PureM s m (Ref s)
+ref :: Monad m => PureM s m (SRef s)
 ref = PureM Reader.ask
 
 {-# INLINE getWith #-}
-getWith :: MonadIO m => Ref s -> m s
+getWith :: MonadIO m => SRef s -> m s
 getWith ref = liftIO (reader ref)
 
 {-# INLINE putWith #-}
-putWith :: MonadIO m => Ref s -> s -> m ()
+putWith :: MonadIO m => SRef s -> s -> m ()
 putWith ref s = liftIO (writer ref s)
 
 {-# INLINE modifyWith #-}
-modifyWith :: MonadIO m => Ref s -> (s -> s) -> m ()
+modifyWith :: MonadIO m => SRef s -> (s -> s) -> m ()
 modifyWith ref f = liftIO (reader ref >>= \s -> writer ref (f s))
 
 {-# INLINE runPureWith #-}
-runPureWith :: (Typeable s, Typeable m, Monad m) => (forall a. m a -> IO a) -> s -> (Ref s -> PureM s m View) -> View
+runPureWith :: (Typeable s, Typeable m, Monad m) => (forall a. m a -> IO a) -> s -> (SRef s -> PureM s m View) -> View
 runPureWith f s st = runPure f s (ref >>= st)
 
 {-# INLINE runPure #-}
@@ -89,7 +89,7 @@ runPure f s st = flip LibraryComponentIO (f,s,st) $ \self ->
         let
           reader = readIORef s_
           writer s = writeIORef s_ s >> updateView
-          stateRef = Ref reader writer
+          stateRef = SRef reader writer
         Pure.modifyM_ self $ \(f,_,PureM st) _ -> do
           v <- f (Reader.runReaderT st stateRef)
           return ((v,s_),return ())
@@ -116,7 +116,7 @@ runPureIO :: (Typeable s) => s -> PureM s IO View -> View
 runPureIO = runPure id
 
 {-# INLINE runPureWithIO #-}
-runPureWithIO :: (Typeable s) => s -> (Ref s -> PureM s IO View) -> View
+runPureWithIO :: (Typeable s) => s -> (SRef s -> PureM s IO View) -> View
 runPureWithIO = runPureWith id
 
 infixr 9 |>=
@@ -142,6 +142,6 @@ infixl 8 <$|
 (<$|) :: (ToView b, Functor f) => f a -> (a -> b) -> f View
 (<$|) a f = fmap (toView . f) a
 
-{-# INLINE inject #-}
-inject :: (IsNode e, Typeable s) => e -> s -> PureM s IO View -> IO ()
-inject e s p = Pure.inject e (runPureIO s p)
+{-# INLINE injectPure #-}
+injectPure :: (IsNode e, Typeable s) => e -> s -> PureM s IO View -> IO ()
+injectPure e s p = inject e (runPureIO s p)
