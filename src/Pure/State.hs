@@ -6,7 +6,7 @@ module Pure.State
   -- * State Reference Utilities
   , SRef(..), ref, getWith, putWith, modifyWith
   -- * Stateful View Construction Combinators
-  , (<$|), (=<|), (|>=), (=<||>), (=<||>=)
+  , (<$|), (=<|), (|>=), (=<||>), (=<||>=), (|#>=), (=<||#>=), (=<||#>)
   -- * Stateful Application Initlizer
   , injectPure
   -- * Re-exports
@@ -16,7 +16,7 @@ import Pure.Data.Default (Default(..))
 import Pure.Data.Lifted (IsNode)
 import Pure.Data.View (Comp(..),View(..),ToView(..))
 import qualified Pure.Data.View as Pure
-import Pure.Data.View.Patterns (pattern LibraryComponentIO,HasChildren(..))
+import Pure.Data.View.Patterns (pattern LibraryComponentIO,HasChildren(..),HasKeyedChildren(..))
 import Pure.DOM
 
 import Control.Applicative
@@ -122,15 +122,28 @@ runPureWithIO = runPureWith id
 infixr 9 |>=
 {-# INLINE (|>=) #-}
 (|>=) :: (Applicative m, HasChildren a) => (a -> a) -> [m View] -> a -> m a
-(|>=) f mvs a = (f a) =<||>= mvs
+(|>=) f mvs a = flip setChildren (f a) <$> sequenceA mvs
+
+infixr 9 |#>=
+{-# INLINE (|#>=) #-}
+(|#>=) :: (Applicative m, HasKeyedChildren a) => (a -> a) -> [m (Int,View)] -> a -> m a
+(|#>=) f mvs a = flip setKeyedChildren (f a) <$> sequenceA mvs
 
 {-# INLINE (=<||>=) #-}
-(=<||>=) :: (Applicative m, HasChildren a) => a -> [m View] -> m a
-(=<||>=) a mvs = flip setChildren a <$> sequenceA mvs
+(=<||>=) :: (Applicative m, ToView a, HasChildren a) => a -> [m View] -> m View
+(=<||>=) a mvs = (toView . flip setChildren a) <$> sequenceA mvs
+
+{-# INLINE (=<||#>=) #-}
+(=<||#>=) :: (Applicative m, ToView a, HasKeyedChildren a) => a -> [m (Int,View)] -> m View
+(=<||#>=) a mvs = (toView . flip setKeyedChildren a) <$> sequenceA mvs
 
 {-# INLINE (=<||>) #-}
-(=<||>) :: (Applicative m, HasChildren a) => a -> [View] -> m a
-(=<||>) a cs = pure (setChildren cs a)
+(=<||>) :: (Applicative m, ToView a, HasChildren a) => a -> [View] -> m View
+(=<||>) a cs = pure (toView $ setChildren cs a)
+
+{-# INLINE (=<||#>) #-}
+(=<||#>) :: (Applicative m, ToView a, HasKeyedChildren a) => a -> [(Int,View)] -> m View
+(=<||#>) a cs = pure (toView $ setKeyedChildren cs a)
 
 infixl 8 =<|
 {-# INLINE (=<|) #-}
