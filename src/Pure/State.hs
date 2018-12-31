@@ -98,7 +98,7 @@ runPure f s st = flip LibraryComponentIO (f,s,st) $ \self ->
       { construct = do
           s_ <- newIORef s
           return (NullView Nothing,s_)
-      , executing = updateView
+      , mounted = updateView
       , receive = \(_,new_s,_) (v,s_) -> do
           (_,old_s,_) <- Pure.ask self
 
