@@ -131,9 +131,8 @@ runPureWith dyn s p = flip Component (dyn,s,p) $ \self ->
       }
 
 {-# INLINE liftPure #-}
-liftPure :: MonadIO m => PureRef s -> PureM s a -> m a
-liftPure ref pm = liftIO $ do
-  (_,_,_,sref) <- Pure.get ref
+liftPure :: MonadIO m => SRef s -> PureM s a -> m a
+liftPure sref pm = liftIO $ do
   let wrapped = do
         st0 <- State.get
         a <- pm
