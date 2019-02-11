@@ -39,7 +39,7 @@ data SRef s = SRef
   , writer :: s -> IO ()
   }
 
-newtype PureM s a = PureM { unPureM :: Reader.ReaderT (Bool,SRef s) IO a }
+newtype PureM s a = PureM { unPureM :: Reader.ReaderT (SRef s) IO a }
   deriving (Functor,Applicative,Monad,Alternative,MonadPlus)
 
 instance MonadIO (PureM s) where
@@ -50,12 +50,7 @@ instance State.MonadState s (PureM s) where
   {-# INLINE get #-}
   get = askSRef >>= readSRef
   {-# INLINE put #-}
-  put s = PureM $ do
-    (lifted,sr) <- Reader.ask 
-    if lifted then
-      liftIO ( writer sr s )
-    else
-      liftIO ( writeIORef (sref sr) s )
+  put s = askSRef >>= \sr -> liftIO ( writeIORef (sref sr) s )
 
 instance MonadFix (PureM s) where
   {-# INLINE mfix #-}
@@ -63,7 +58,7 @@ instance MonadFix (PureM s) where
 
 {-# INLINE askSRef #-}
 askSRef :: PureM s (SRef s)
-askSRef = PureM ( Reader.asks snd )
+askSRef = PureM Reader.ask
 
 {-# INLINE readSRef #-}
 readSRef :: MonadIO m => SRef s -> m s
@@ -98,7 +93,7 @@ type PureRef s = Pure.Ref (Reactive,s,PureM s View) (s,PureM s View,View,SRef s)
 {-# INLINE runPureWith #-}
 runPureWith :: (Typeable s) => Reactive -> s -> PureM s View -> View
 runPureWith dyn s p = flip Component (dyn,s,p) $ \self ->
-  let eval p stateRef = Reader.runReaderT (unPureM p) (False,stateRef)
+  let eval p stateRef = Reader.runReaderT (unPureM p) stateRef
       updateView = Pure.modifyM_ self $ \_ (s,p,_,stateRef) -> do
         view <- eval p stateRef
         return ((s,p,view,stateRef),return ())
@@ -139,7 +134,14 @@ runPureWith dyn s p = flip Component (dyn,s,p) $ \self ->
 liftPure :: MonadIO m => PureRef s -> PureM s a -> m a
 liftPure ref pm = liftIO $ do
   (_,_,_,sref) <- Pure.get ref
-  Reader.runReaderT (unPureM pm) (True,sref)
+  let wrapped = do
+        st0 <- State.get
+        a <- pm
+        st1 <- State.get
+        unless ( isTrue# ( reallyUnsafePtrEquality# st0 st1 ) )
+          ( writeSRef sref st1 )
+        return a
+  Reader.runReaderT ( unPureM wrapped ) sref
 
 {-# INLINE runPure #-}
 runPure :: Typeable s => s -> PureM s View -> View
