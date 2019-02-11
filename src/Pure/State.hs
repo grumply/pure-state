@@ -1,14 +1,14 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving, ImplicitParams, MagicHash, FlexibleInstances, MultiParamTypeClasses, RankNTypes, PatternSynonyms #-}
 module Pure.State
   ( -- * Stateful View Monad
-    PureM, PureRef, Reactive(..)
+    PureM(..), PureRef, Reactive(..)
   , runPureWith, runPure, runPureDyn
   -- * Lift Pure computations
   , liftPure
   -- * Convenience utilities
   , withSRef
   -- * State Reference Utilities
-  , SRef(..), getSRef, readSRef, writeSRef, modifySRef
+  , SRef(..), askSRef, readSRef, writeSRef, modifySRef
   -- * Stateful View Construction Combinators
   , (<$|), (=<|), (|>=), (=<||>), (=<||>=), (|#>=), (=<||#>=), (=<||#>)
   ) where
@@ -25,9 +25,8 @@ import Control.Monad
 import Control.Monad.Fix
 import Control.Monad.Trans
 import Control.Monad.IO.Class
-import qualified Control.Monad.Trans.Reader as Reader
-import qualified Control.Monad.Trans.State as State
-import qualified Control.Monad.State.Class as State
+import qualified Control.Monad.Reader as Reader
+import qualified Control.Monad.State as State
 
 import Data.IORef
 import Data.Typeable
@@ -47,9 +46,15 @@ instance MonadIO (PureM s) where
   {-# INLINE liftIO #-}
   liftIO = PureM . liftIO
 
+instance Reader.MonadReader (SRef s) (PureM s) where
+  {-# INLINE ask #-}
+  ask = PureM Reader.ask
+  {-# INLINE local #-}
+  local f (PureM m) = PureM ( Reader.local f m )
+
 instance State.MonadState s (PureM s) where
   {-# INLINE get #-}
-  get = getSRef >>= readSRef
+  get = askSRef >>= readSRef
   {-# INLINE put #-}
   -- Note: this causes a new state to be seen in the rest of the computation, 
   -- but does not force a new component update! To force a component update, 
@@ -59,15 +64,15 @@ instance State.MonadState s (PureM s) where
   --
   -- which is also possible within any `PureM`. I believe this is the more 
   -- intuitive behavior. If we called `writer` for every `put`, it could loop!
-  put s = getSRef >>= \sr -> liftIO ( writeIORef (sref sr) s )
+  put s = askSRef >>= \sr -> liftIO ( writeIORef (sref sr) s )
 
 instance MonadFix (PureM s) where
   {-# INLINE mfix #-}
   mfix = PureM . mfix . (unPureM .)
 
-{-# INLINE getSRef #-}
-getSRef :: PureM s (SRef s)
-getSRef = PureM Reader.ask
+{-# INLINE askSRef #-}
+askSRef :: PureM s (SRef s)
+askSRef = PureM Reader.ask
 
 {-# INLINE readSRef #-}
 readSRef :: MonadIO m => SRef s -> m s
@@ -87,7 +92,7 @@ modifySRef ref f = liftIO (reader ref >>= \s -> writer ref (f s))
 
 {-# INLINE withSRef #-}
 withSRef :: (SRef s -> IO a) -> PureM s a
-withSRef f = getSRef >>= liftIO . f
+withSRef f = askSRef >>= liftIO . f
 
 data Reactive = Reactive
   { onState :: Bool
