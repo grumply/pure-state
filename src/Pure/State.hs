@@ -1,22 +1,23 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving, ImplicitParams, MagicHash, FlexibleInstances, MultiParamTypeClasses, RankNTypes, PatternSynonyms #-}
 module Pure.State
   ( -- * Stateful View Monad
-    PureM, runPure, runPureIO
-  , runPureWith, runPureWithIO
+    PureM, PureRef, Reactive(..)
+  , runPureWith, runPure, runPureDyn
+  -- * Lift Pure computations
+  , liftPure
+  -- * Convenience utilities
+  , withSRef
   -- * State Reference Utilities
-  , SRef(..), ref, getWith, putWith, modifyWith
+  , SRef(..), getSRef, readSRef, writeSRef, modifySRef
   -- * Stateful View Construction Combinators
   , (<$|), (=<|), (|>=), (=<||>), (=<||>=), (|#>=), (=<||#>=), (=<||#>)
-  -- * Stateful Application Initlizer
-  , injectPure
-  -- * Re-exports
   ) where
 
 import Pure.Data.Default (Default(..))
 import Pure.Data.Lifted (IsNode)
 import Pure.Data.View (Comp(..),View(..),ToView(..))
 import qualified Pure.Data.View as Pure
-import Pure.Data.View.Patterns (pattern LibraryComponentIO,HasChildren(..),HasKeyedChildren(..))
+import Pure.Data.View.Patterns (pattern Component,HasChildren(..),HasKeyedChildren(..))
 import Pure.DOM
 
 import Control.Applicative
@@ -33,91 +34,124 @@ import Data.Typeable
 
 import GHC.Exts
 
--- These prevent GC if used outside of the View context. I should
--- use System.Mem.Weak and the stateful component's ThreadId.
 data SRef s = SRef
-  { reader :: IO s
+  { sref   :: IORef s
+  , reader :: IO s
   , writer :: s -> IO ()
   }
 
-newtype PureM s m a = PureM { unPureM :: Reader.ReaderT (SRef s) m a }
+newtype PureM s a = PureM { unPureM :: Reader.ReaderT (SRef s) IO a }
   deriving (Functor,Applicative,Monad,Alternative,MonadPlus)
 
-instance MonadIO m => MonadIO (PureM s m) where
+instance MonadIO (PureM s) where
   {-# INLINE liftIO #-}
   liftIO = PureM . liftIO
 
-instance MonadTrans (PureM s) where
-  {-# INLINE lift #-}
-  lift = PureM . lift
-
-instance MonadIO m => State.MonadState s (PureM s m) where
+instance State.MonadState s (PureM s) where
   {-# INLINE get #-}
-  get = ref >>= getWith
+  get = getSRef >>= readSRef
   {-# INLINE put #-}
-  put s = ref >>= flip putWith s
+  -- Note: this causes a new state to be seen in the rest of the computation, 
+  -- but does not force a new component update! To force a component update, 
+  -- you must call:
+  --
+  -- > `writer :: SRef s -> s -> IO ()` 
+  --
+  -- which is also possible within any `PureM`. I believe this is the more 
+  -- intuitive behavior. If we called `writer` for every `put`, it could loop!
+  put s = getSRef >>= \sr -> liftIO ( writeIORef (sref sr) s )
 
-instance MonadFix m => MonadFix (PureM s m) where
+instance MonadFix (PureM s) where
   {-# INLINE mfix #-}
   mfix = PureM . mfix . (unPureM .)
 
-{-# INLINE ref #-}
-ref :: Monad m => PureM s m (SRef s)
-ref = PureM Reader.ask
+{-# INLINE getSRef #-}
+getSRef :: PureM s (SRef s)
+getSRef = PureM Reader.ask
 
-{-# INLINE getWith #-}
-getWith :: MonadIO m => SRef s -> m s
-getWith ref = liftIO (reader ref)
+{-# INLINE readSRef #-}
+readSRef :: MonadIO m => SRef s -> m s
+readSRef ref = liftIO (reader ref)
 
-{-# INLINE putWith #-}
-putWith :: MonadIO m => SRef s -> s -> m ()
-putWith ref s = liftIO (writer ref s)
+{-# INLINE writeSRef #-}
+-- NOTE: Using `writeSRef` within a `PureM` could cause a loop. Use
+-- `put` where possible.
+writeSRef :: MonadIO m => SRef s -> s -> m ()
+writeSRef ref s = liftIO (writer ref s)
 
-{-# INLINE modifyWith #-}
-modifyWith :: MonadIO m => SRef s -> (s -> s) -> m ()
-modifyWith ref f = liftIO (reader ref >>= \s -> writer ref (f s))
+{-# INLINE modifySRef #-}
+-- NOTE: Using `modifySRef` within a `PureM` could cause a loop. Use
+-- `modify` where possible.
+modifySRef :: MonadIO m => SRef s -> (s -> s) -> m ()
+modifySRef ref f = liftIO (reader ref >>= \s -> writer ref (f s))
+
+{-# INLINE withSRef #-}
+withSRef :: (SRef s -> IO a) -> PureM s a
+withSRef f = getSRef >>= liftIO . f
+
+data Reactive = Reactive
+  { onState :: Bool
+  , onPure  :: Bool
+  }
+
+instance Default Reactive where
+  def = Reactive False False
+
+type PureRef s = Pure.Ref (Reactive,s,PureM s View) (s,PureM s View,View,SRef s)
 
 {-# INLINE runPureWith #-}
-runPureWith :: (Typeable s, Typeable m, Monad m) => (forall a. m a -> IO a) -> s -> (SRef s -> PureM s m View) -> View
-runPureWith f s st = runPure f s (ref >>= st)
-
-{-# INLINE runPure #-}
-runPure :: (Typeable s, Typeable m) => (forall a. m a -> IO a) -> s -> PureM s m View -> View
-runPure f s st = flip LibraryComponentIO (f,s,st) $ \self ->
-  let updateView = do
-        (_,s_) <- Pure.get self
-        let
-          reader = readIORef s_
-          writer s = writeIORef s_ s >> updateView
-          stateRef = SRef reader writer
-        Pure.modifyM_ self $ \(f,_,PureM st) _ -> do
-          v <- f (Reader.runReaderT st stateRef)
-          return ((v,s_),return ())
+runPureWith :: (Typeable s) => Reactive -> s -> PureM s View -> View
+runPureWith dyn s p = flip Component (dyn,s,p) $ \self ->
+  let eval p stateRef = Reader.runReaderT (unPureM p) stateRef
+      updateView = Pure.modifyM_ self $ \_ (s,p,_,stateRef) -> do
+        view <- eval p stateRef
+        return ((s,p,view,stateRef),return ())
   in
     def
       { construct = do
+          (dyn,s,p) <- Pure.ask self
           s_ <- newIORef s
-          return (NullView Nothing,s_)
-      , mounted = updateView
-      , receive = \(_,new_s,_) (v,s_) -> do
-          (_,old_s,_) <- Pure.ask self
+          let stateRef = SRef s_ (readIORef s_) (\s -> writeIORef s_ s >> updateView)
+          view <- eval p stateRef
+          return (s,p,view,stateRef)
+      , receive = \(new_dyn,new_s,new_p) (s,p,view,stateRef) -> do
+          (old_dyn,_,_) <- Pure.ask self
 
-          -- Yeah, I don't like it either, but what can you do?
-          unless (isTrue# (reallyUnsafePtrEquality# new_s old_s)) $
-            writeIORef s_ new_s
+          let
+            newstate    = not ( isTrue# ( reallyUnsafePtrEquality# new_s s ))
+            newview     = not ( isTrue# ( reallyUnsafePtrEquality# new_p p ))
 
-          updateView
-          return (v,s_)
-      , render = \_ (v,_) -> v
+            injectstate = newstate && onState new_dyn
+            injectpure  = newview && onPure new_dyn
+
+            s' = if injectstate then new_s else s
+            p' = if injectpure  then new_p else p
+
+          when injectstate 
+            ( writeIORef ( sref stateRef ) new_s )
+
+          if injectstate || injectpure then do
+            view <- eval p' stateRef
+            return (s',p',view,stateRef)
+          else
+            return (s',p',view,stateRef)
+
+      , render = \_ (_,_,v,_) -> v
       }
 
-{-# INLINE runPureIO #-}
-runPureIO :: (Typeable s) => s -> PureM s IO View -> View
-runPureIO = runPure id
+{-# INLINE liftPure #-}
+liftPure :: MonadIO m => PureRef s -> PureM s a -> m a
+liftPure ref pm = liftIO $ do
+  (_,_,_,sref) <- Pure.get ref
+  Reader.runReaderT (unPureM pm) sref
 
-{-# INLINE runPureWithIO #-}
-runPureWithIO :: (Typeable s) => s -> (SRef s -> PureM s IO View) -> View
-runPureWithIO = runPureWith id
+{-# INLINE runPure #-}
+runPure :: Typeable s => s -> PureM s View -> View
+runPure = runPureWith def
+
+{-# INLINE runPureDyn #-}
+runPureDyn :: Typeable s => s -> PureM s View -> View
+runPureDyn = runPureWith (Reactive True True)
 
 infixr 9 |>=
 {-# INLINE (|>=) #-}
@@ -154,7 +188,3 @@ infixl 8 <$|
 {-# INLINE (<$|) #-}
 (<$|) :: (ToView b, Functor f) => f a -> (a -> b) -> f View
 (<$|) a f = fmap (toView . f) a
-
-{-# INLINE injectPure #-}
-injectPure :: (IsNode e, Typeable s) => e -> s -> PureM s IO View -> IO ()
-injectPure e s p = inject e (runPureIO s p)
