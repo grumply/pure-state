@@ -39,32 +39,23 @@ data SRef s = SRef
   , writer :: s -> IO ()
   }
 
-newtype PureM s a = PureM { unPureM :: Reader.ReaderT (SRef s) IO a }
+newtype PureM s a = PureM { unPureM :: Reader.ReaderT (Bool,SRef s) IO a }
   deriving (Functor,Applicative,Monad,Alternative,MonadPlus)
 
 instance MonadIO (PureM s) where
   {-# INLINE liftIO #-}
   liftIO = PureM . liftIO
 
-instance Reader.MonadReader (SRef s) (PureM s) where
-  {-# INLINE ask #-}
-  ask = PureM Reader.ask
-  {-# INLINE local #-}
-  local f (PureM m) = PureM ( Reader.local f m )
-
 instance State.MonadState s (PureM s) where
   {-# INLINE get #-}
   get = askSRef >>= readSRef
   {-# INLINE put #-}
-  -- Note: this causes a new state to be seen in the rest of the computation, 
-  -- but does not force a new component update! To force a component update, 
-  -- you must call:
-  --
-  -- > `writer :: SRef s -> s -> IO ()` 
-  --
-  -- which is also possible within any `PureM`. I believe this is the more 
-  -- intuitive behavior. If we called `writer` for every `put`, it could loop!
-  put s = askSRef >>= \sr -> liftIO ( writeIORef (sref sr) s )
+  put s = PureM $ do
+    (lifted,sr) <- Reader.ask 
+    if lifted then
+      liftIO ( writer sr s )
+    else
+      liftIO ( writeIORef (sref sr) s )
 
 instance MonadFix (PureM s) where
   {-# INLINE mfix #-}
@@ -72,7 +63,7 @@ instance MonadFix (PureM s) where
 
 {-# INLINE askSRef #-}
 askSRef :: PureM s (SRef s)
-askSRef = PureM Reader.ask
+askSRef = PureM ( Reader.asks snd )
 
 {-# INLINE readSRef #-}
 readSRef :: MonadIO m => SRef s -> m s
@@ -107,7 +98,7 @@ type PureRef s = Pure.Ref (Reactive,s,PureM s View) (s,PureM s View,View,SRef s)
 {-# INLINE runPureWith #-}
 runPureWith :: (Typeable s) => Reactive -> s -> PureM s View -> View
 runPureWith dyn s p = flip Component (dyn,s,p) $ \self ->
-  let eval p stateRef = Reader.runReaderT (unPureM p) stateRef
+  let eval p stateRef = Reader.runReaderT (unPureM p) (False,stateRef)
       updateView = Pure.modifyM_ self $ \_ (s,p,_,stateRef) -> do
         view <- eval p stateRef
         return ((s,p,view,stateRef),return ())
@@ -148,7 +139,7 @@ runPureWith dyn s p = flip Component (dyn,s,p) $ \self ->
 liftPure :: MonadIO m => PureRef s -> PureM s a -> m a
 liftPure ref pm = liftIO $ do
   (_,_,_,sref) <- Pure.get ref
-  Reader.runReaderT (unPureM pm) sref
+  Reader.runReaderT (unPureM pm) (True,sref)
 
 {-# INLINE runPure #-}
 runPure :: Typeable s => s -> PureM s View -> View
