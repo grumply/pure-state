@@ -4,7 +4,7 @@ module Pure.State
     PureM(..), PureRef, Reactive(..)
   , runPureWith, runPure, runPureDyn
   -- * Lift Pure computations
-  , liftPure
+  , liftPure, embedPure
   -- * Convenience utilities
   , withSRef
   -- * State Reference Utilities
@@ -141,6 +141,12 @@ liftPure sref pm = liftIO $ do
           ( writeSRef sref st1 )
         return a
   Reader.runReaderT ( unPureM wrapped ) sref
+
+{-# INLINE embedPure #-}
+embedPure :: MonadIO m => PureM s a -> PureM s (m a)
+embedPure m = do
+  sref <- askSRef
+  pure ( liftPure sref m )
 
 {-# INLINE runPure #-}
 runPure :: Typeable s => s -> PureM s View -> View
