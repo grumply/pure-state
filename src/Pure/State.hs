@@ -119,6 +119,9 @@ class MonadIO m => MonadSRef s m | m -> s where
 instance MonadSRef s (PureM s) where
   sref = PureM Reader.ask
 
+instance (MonadTrans t, MonadIO (t m), MonadSRef s m) => MonadSRef s (t m) where
+  sref = lift sref
+
 instance (MonadIO m, MonadSRef s m) => MonadState s m where
   get = getState
   put = setState
