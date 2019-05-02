@@ -40,7 +40,7 @@ data SRef s = SRef
   }
 
 newtype PureM s a = PureM { unPureM :: Reader.ReaderT (SRef s) IO a }
-  deriving (Functor,Applicative,Monad,Alternative,MonadPlus)
+  deriving (Functor,Applicative,Monad,Alternative,MonadPlus,Reader.MonadReader (SRef s))
 
 instance MonadIO (PureM s) where
   {-# INLINE liftIO #-}
