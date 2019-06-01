@@ -21,6 +21,7 @@ import Pure.DOM
 
 import Control.Applicative
 import Control.Monad
+import Control.Monad.Catch
 import Control.Monad.Fix
 import Control.Monad.Trans
 import Control.Monad.IO.Class
@@ -80,15 +81,9 @@ modifySRef :: MonadIO m => SRef s -> (s -> s) -> m ()
 modifySRef r f = liftIO (readIORef (ref r) >>= \s -> write r (f s))
 
 newtype PureM s a = PureM { unPureM :: Reader.ReaderT (SRef s) IO a }
-  deriving (Functor,Applicative,Monad,Alternative,MonadPlus)
-
-instance MonadIO (PureM s) where
-  {-# INLINE liftIO #-}
-  liftIO = PureM . liftIO
-
-instance MonadFix (PureM s) where
-  {-# INLINE mfix #-}
-  mfix = PureM . mfix . (unPureM .)
+  deriving (Functor,Applicative,Monad,Alternative,MonadPlus,MonadIO
+           ,MonadFix,MonadCatch,MonadThrow,MonadMask
+           )
 
 class MonadIO m => MonadSRef s m | m -> s where
   -- | Access an SRef in an `m` context.
