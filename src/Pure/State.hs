@@ -8,6 +8,8 @@ module Pure.State
   , liftPure, embedPure
   -- * State Reference Utilities
   , SRef(..), readSRef, writeSRef, modifySRef
+  -- * Immediate state modifiers
+  , push, pushes 
   -- * Stateful View Construction Combinators
   , (<$|), (=<|), (|>=), (=<||>), (=<||>=), (|#>=), (=<||#>=), (=<||#>)
   ) where
@@ -120,6 +122,16 @@ instance (MonadTrans t, MonadIO (t m), MonadSRef s m) => MonadSRef s (t m) where
 instance (MonadIO m, MonadSRef s m) => MonadState s m where
   get = getState
   put = setState
+
+-- | An version of `put` that forces re-evaluation of the SRef owner's view.
+push :: MonadSRef s m => s -> m ()
+push s = sref >>= \ref -> writeSRef ref s
+{-# INLINE push #-}
+
+-- | An version of `modify` that forces re-evaluation of the SRef owner's view.
+pushes :: MonadSRef s m => (s -> s) -> m ()
+pushes f = sref >>= \ref -> readSRef ref >>= \s -> writeSRef ref (f s)
+{-# INLINE pushes #-}
 
 data Reactive = Reactive
   { onState :: Bool
