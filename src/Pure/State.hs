@@ -28,7 +28,6 @@ import Control.Monad.Fix
 import Control.Monad.Trans
 import Control.Monad.IO.Class
 import Control.Monad.Reader as Reader
-import Control.Monad.State as State
 
 import Data.IORef
 import Data.Typeable
@@ -92,8 +91,11 @@ class MonadIO m => MonadSRef s m | m -> s where
   sref :: m (SRef s)
 
   -- | Get the current state of an SRef.
-  getState :: m s
-  getState = sref >>= readSRef
+  get :: m s
+  get = sref >>= readSRef
+
+  put :: s -> m ()
+  put = setState
 
   -- | Set the state of an SRef in a context containing access to the SRef.
   -- This will generally be in view-producing code and the update will be 
@@ -118,10 +120,6 @@ instance MonadSRef s (PureM s) where
 
 instance (MonadTrans t, MonadIO (t m), MonadSRef s m) => MonadSRef s (t m) where
   sref = lift sref
-
-instance (MonadIO m, MonadSRef s m) => MonadState s m where
-  get = getState
-  put = setState
 
 -- | An version of `put` that forces re-evaluation of the SRef owner's view.
 push :: MonadSRef s m => s -> m ()
@@ -187,9 +185,9 @@ runPureWith dyn s p = flip Component (dyn,s,p) $ \self ->
 liftPure :: MonadIO m => SRef s -> PureM s a -> m a
 liftPure s pm = liftIO $ do
   let wrapped = do
-        st0 <- State.get
+        st0 <- get
         a <- pm
-        st1 <- State.get
+        st1 <- get
         unless ( isTrue# ( reallyUnsafePtrEquality# st0 st1 ) )
           ( writeSRef s st1 )
         return a
